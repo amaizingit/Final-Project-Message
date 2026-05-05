@@ -103,11 +103,11 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-6">
           <p className="text-center text-sm font-bold text-slate-500 uppercase tracking-widest mb-12">Trusted by modern teams across platforms</p>
           <div className="flex flex-wrap justify-center items-center gap-12 opacity-40 grayscale hover:grayscale-0 transition-all duration-500">
-            <Phone className="w-8 h-8" title="WhatsApp" />
-            <Facebook className="w-8 h-8" title="Messenger" />
-            <Instagram className="w-8 h-8" title="Instagram" />
-            <Twitter className="w-8 h-8" title="X" />
-            <Globe className="w-8 h-8" title="Web" />
+            <Phone className="w-8 h-8" />
+            <Facebook className="w-8 h-8" />
+            <Instagram className="w-8 h-8" />
+            <Twitter className="w-8 h-8" />
+            <Globe className="w-8 h-8" />
           </div>
         </div>
       </section>

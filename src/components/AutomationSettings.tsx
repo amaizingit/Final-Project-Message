@@ -205,7 +205,6 @@ const AutomationSettings: React.FC<AutomationSettingsProps> = ({ appColors, onCl
                         onChange={(e) => updateRule(rule.id, { response: e.target.value })}
                         placeholder="Type response template..."
                         className="w-full bg-slate-900/50 border border-white/5 rounded-xl p-4 text-xs text-slate-300 placeholder:text-slate-700 focus:outline-none transition-all resize-none h-20"
-                        style={{ focusBorderColor: `${appColors.primaryAccent}40` }}
                        />
                        <p className="text-[9px] text-slate-600 font-black uppercase tracking-widest mt-2">Auto Reply Message</p>
                     </div>

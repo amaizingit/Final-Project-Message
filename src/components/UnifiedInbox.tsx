@@ -309,7 +309,6 @@ const UnifiedInbox: React.FC<UnifiedInboxProps> = ({ appColors, comments, onRepl
                     <button 
                       key={t} 
                       className="px-4 py-2 bg-slate-900 border border-white/10 rounded-xl text-[10px] font-bold text-slate-400 transition-all hover:text-white"
-                      style={{ hoverBorderColor: appColors.primaryAccent }}
                     >
                       {t}
                     </button>
