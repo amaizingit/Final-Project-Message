@@ -1,0 +1,9 @@
+{
+  "name": "Remix: OmniInbox Social Dashboard",
+  "description": "A high-performance social media dashboard for managing WhatsApp, Facebook, and Messenger page connects with real-time routing settings.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
