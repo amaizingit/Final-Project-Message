@@ -929,35 +929,40 @@ function MainApp() {
     };
 
     const performEdgeFallback = async () => {
-      console.log(`[WAHA] Falling back to Internal Proxy: ${endpoint} | Method: ${method}`);
+      if (!isSupabaseConfigured) {
+        console.warn("[WAHA] Edge fallback skipped: Supabase not configured");
+        throw new Error("Supabase not configured for proxy fallback");
+      }
+      
+      console.log(`[WAHA] Falling back to Edge Function: ${endpoint} | Method: ${method}`);
       
       try {
-        const response = await fetch('/api/waha-proxy', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
+        const { data, error: invokeError } = await supabase.functions.invoke('waha-proxy', {
+          body: {
             waha_url: wahaConfig.url,
             session_name: wahaConfig.session,
             waha_api_key: wahaConfig.apiKey,
             endpoint,
             method,
             params: method === 'POST' ? body : params
-          })
+          }
         });
         
-        const data = await response.json();
-        
-        if (!response.ok) {
-          console.warn(`[WAHA] Internal Proxy returned error for ${endpoint}:`, data.error || response.statusText);
-          return { error: true, message: data.error || response.statusText, ...data };
+        if (invokeError) {
+          console.error(`[WAHA] Edge Function invocation error:`, invokeError);
+          throw invokeError;
         }
         
-        console.log(`[WAHA] Internal Proxy success for ${endpoint}`);
+        // Normalize Edge Function error format
+        if (data && data.error) {
+          console.warn(`[WAHA] Edge Function returned error for ${endpoint}:`, data.error);
+          return { error: true, message: data.error, ...data };
+        }
+        
+        console.log(`[WAHA] Edge Function success for ${endpoint}`);
         return data;
       } catch (err: any) {
-        console.error(`[WAHA] Internal Proxy fatal error for ${endpoint}:`, err.message);
+        console.error(`[WAHA] Edge fallback fatal error for ${endpoint}:`, err.message);
         throw err;
       }
     };
@@ -1134,12 +1139,14 @@ function MainApp() {
 
       setSyncProgress(90);
       
-      // Deduplicate by a combined key to prevent duplicate keys in UI
-      const uniqueChatsMap = new Map<string, Chat>();
+      // Deduplicate by ID to prevent duplicate keys in UI
+      const uniqueChatsMap = new Map<string | number, Chat>();
       allChats.forEach(chat => {
-        const dedupeKey = `${chat.platform}-${chat.session || 'default'}-${chat.id}`;
-        if (!uniqueChatsMap.has(dedupeKey)) {
-          uniqueChatsMap.set(dedupeKey, chat);
+        const id = chat.id;
+        if (!uniqueChatsMap.has(id)) {
+          uniqueChatsMap.set(id, chat);
+        } else {
+          // Merge/Update logic if needed, for now just keep the first one found (usually most recent)
         }
       });
       allChats = Array.from(uniqueChatsMap.values());
@@ -2031,8 +2038,8 @@ function Dashboard({
   }
 
   const sidebarItems: SidebarItemData[] = useMemo(() => {
-    const isExec = currentUser?.role === "Executive";
-    const items: SidebarItemData[] = [
+    const isExec = currentUser.role === "Executive";
+    return [
       { icon: <Home className="w-5 h-5" />, label: "Home", section: 'MENU' },
       { icon: <Zap className="w-5 h-5 text-amber-400" />, label: "AI Assistant", section: 'MENU' },
       { icon: <Phone className="w-5 h-5" />, label: "WhatsApp", section: 'MENU', restricted: true },
@@ -2056,16 +2063,14 @@ function Dashboard({
       { icon: <CreditCard className="w-5 h-5" />, label: "Packages", section: 'SYSTEM', restricted: true },
       { icon: <User className="w-5 h-5" />, label: "Profile", section: 'SYSTEM' },
       { icon: <Settings className="w-5 h-5" />, label: "Settings", section: 'SYSTEM', restricted: true },
-    ];
-
-    return items.filter(item => {
+    ].filter(item => {
       if (!isExec) return true;
       // All menu items that aren't specifically "Restricted" are visible
       if (!item.restricted) return true;
       // If it is restricted, check if the executive has specific permission for it
-      return currentUser?.permissions?.includes(item.label);
+      return currentUser.permissions?.includes(item.label);
     });
-  }, [currentUser?.role, currentUser?.permissions]);
+  }, [currentUser.role, currentUser.permissions]);
 
   const stats = useMemo(() => {
     if (currentUser.role === "Executive") {
@@ -3484,7 +3489,7 @@ function AIInsightCard({ icon, title, desc, color }: { icon: React.ReactNode, ti
   return (
     <div className="bg-[#1e293b] p-8 rounded-[2rem] border border-slate-800 shadow-xl hover:border-slate-700 transition-all group">
       <div className={`w-12 h-12 ${color} bg-white/5 rounded-xl flex items-center justify-center mb-6 shadow-lg group-hover:scale-110 transition-transform`}>
-        {React.cloneElement(icon as React.ReactElement<{className?: string}>, { className: "w-6 h-6" })}
+        {React.cloneElement(icon as React.ReactElement, { className: "w-6 h-6" })}
       </div>
       <h5 className="font-bold text-white mb-2">{title}</h5>
       <p className="text-xs text-slate-400 leading-relaxed font-medium">{desc}</p>
@@ -7142,7 +7147,7 @@ function ChatsView({
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Viewing: <span className="text-blue-400">{activeFilter}</span></span>
             <button 
-              onClick={() => handleLiveSync(true)}
+              onClick={handleLiveSync}
               disabled={isAIGenerating}
               className="p-1.5 bg-[#1e293b]/30 border border-slate-800/50 rounded-md text-slate-400 hover:text-white transition-all shrink-0 flex items-center gap-1 group"
               title="Refresh Live from WhatsApp"
@@ -7283,7 +7288,7 @@ function ChatsView({
                           id: typeof wm.id === 'object' ? (wm.id?._serialized || JSON.stringify(wm.id)) : wm.id,
                           text: wm.body || wm.content || wm.text || "(No content)",
                           type: (wm.type === 'image' || wm.hasMedia) ? 'image' : 'text',
-                          sender: (wm.fromMe ? "me" : "them") as "me" | "them",
+                          sender: wm.fromMe ? "me" : "them",
                           time: wm.timestamp ? new Date(wm.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Now"
                         }));
                         setChats(prev => prev.map(c => String(c.id) === String(selectedChat) ? { ...c, messages: formatted } : c));
@@ -8180,7 +8185,7 @@ function ChatsView({
                         onClick={() => {
                           const title = prompt("Enter a title for this saved reply:", "Quick Reply");
                           if (title) {
-                            setSavedReplies(prev => [...prev, { id: Date.now(), title, content: messageText, imageUrl: null }]);
+                            setSavedReplies(prev => [...prev, { id: Date.now(), title, content: messageText }]);
                             alert("Message saved to templates!");
                           }
                         }}
@@ -8258,7 +8263,7 @@ function ChatsView({
               <div>
                 <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
                   {currentChat.name}
-                  <CheckCircle2 className="w-4 h-4 text-blue-500 fill-blue-500/10" />
+                  <CheckCircle2 className="w-4 h-4 text-blue-500 fill-blue-500/10" title="Verified Account" />
                 </h3>
                 <p className="text-slate-500 text-[11px] font-black uppercase tracking-widest mt-0.5">
                   Synced via {currentChat.platform}
