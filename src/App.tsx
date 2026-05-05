@@ -801,18 +801,21 @@ export default function App() {
       const apiPath = (isSessionEndpoint || isGlobalEndpoint)
         ? `/waha-proxy/api/${endpoint}` 
         : `/waha-proxy/api/${session}/${endpoint}`;
-      const url = new URL(`${window.location.origin}${apiPath}`);
       
-      const queryParams = { ...params };
-      if (isGlobalEndpoint && !queryParams.session) queryParams.session = session;
-      Object.keys(queryParams).forEach(key => url.searchParams.append(key, queryParams[key]));
+      // Use relative path for fetch to ensure it goes through the Vite proxy correctly 
+      // regardless of origin issues in iframes.
+      const fetchPath = apiPath;
+      
+      const queryParams = new URLSearchParams(params);
+      if (isGlobalEndpoint && !queryParams.has('session')) queryParams.append('session', session);
+      const queryString = queryParams.toString();
+      const finalUrl = queryString ? `${fetchPath}?${queryString}` : fetchPath;
       
       const headers: any = { 'Content-Type': 'application/json' };
       const currentApiKey = wahaConfig.apiKey;
       if (currentApiKey) {
         const trimmedKey = currentApiKey.trim();
         headers['X-Api-Key'] = trimmedKey;
-        // Also provide Authorization header as many proxies/servers prefer it
         headers['Authorization'] = `Bearer ${trimmedKey}`;
       }
       
@@ -820,13 +823,13 @@ export default function App() {
         console.log(`[WAHA] Calling ${method} ${apiPath} | Session: ${session} | API Key set: ${!!currentApiKey}`);
       }
 
-      // WAHA chat history can be slow, especially when NOWEB store is warming up.
-      const timeoutMs = endpoint === 'chats' ? 45000 : 12000;
+      const timeoutMs = endpoint === 'chats' ? 60000 : 25000;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const response = await fetch(url.toString(), {
+        console.log(`[WAHA] Fetching: ${finalUrl}`);
+        const response = await fetch(finalUrl, {
           method,
           headers,
           body: method === 'POST' && body ? JSON.stringify(body) : null,
@@ -843,71 +846,86 @@ export default function App() {
           } catch (e) {
             // Success response but not JSON
             if (response.ok) {
-              console.info(`[WAHA] Non-JSON success from ${endpoint}:`, responseText.substring(0, 100));
               return { success: true, text: responseText };
             }
             // Error response and not JSON
             const errorMsg = responseText || response.statusText || "WAHA request failed";
-            console.warn(`[WAHA] API Error (Non-JSON) on ${endpoint}:`, { status: response.status, message: errorMsg });
             return { error: true, statusCode: response.status, message: errorMsg };
           }
         } else if (response.ok) {
-          // Empty success response (common for some POST/DELETE actions)
+          // Empty success response
           return { success: true, message: "Empty success response" };
         }
 
         if (!response.ok) {
           const errorMsg = responseData?.message || responseText || response.statusText || "WAHA request failed";
-          console.warn(`[WAHA] API Error on ${endpoint}:`, { status: response.status, message: errorMsg });
           return { ...responseData, error: true, statusCode: response.status, message: errorMsg };
         }
         return responseData;
       } catch (err: any) {
         clearTimeout(timeoutId);
         if (err.name === 'AbortError') {
-          throw new Error(`WAHA Request Timeout (${endpoint}) after ${Math.round(timeoutMs / 1000)}s`);
+          console.warn(`[WAHA] Request Timed Out: ${endpoint}`);
+          return { error: true, message: "Timeout", isTimeout: true };
         }
-        throw err;
+        console.error(`[WAHA] Network Error:`, err.message);
+        return { error: true, message: err.message, isNetworkError: true };
       }
     };
 
     const performEdgeFallback = async () => {
       if (!isSupabaseConfigured) {
+        console.warn("[WAHA] Edge fallback skipped: Supabase not configured");
         throw new Error("Supabase not configured for proxy fallback");
       }
       
-      const { data, error: invokeError } = await supabase.functions.invoke('waha-proxy', {
-        body: {
-          waha_url: wahaConfig.url,
-          session_name: wahaConfig.session,
-          waha_api_key: wahaConfig.apiKey,
-          endpoint,
-          method,
-          params: method === 'POST' ? body : params
+      console.log(`[WAHA] Falling back to Edge Function: ${endpoint} | Method: ${method}`);
+      
+      try {
+        const { data, error: invokeError } = await supabase.functions.invoke('waha-proxy', {
+          body: {
+            waha_url: wahaConfig.url,
+            session_name: wahaConfig.session,
+            waha_api_key: wahaConfig.apiKey,
+            endpoint,
+            method,
+            params: method === 'POST' ? body : params
+          }
+        });
+        
+        if (invokeError) {
+          console.error(`[WAHA] Edge Function invocation error:`, invokeError);
+          throw invokeError;
         }
-      });
-      
-      if (invokeError) throw invokeError;
-      
-      // Normalize Edge Function error format
-      if (data && data.error && typeof data.error === 'string') {
-        return { error: true, message: data.error, ...data };
+        
+        // Normalize Edge Function error format
+        if (data && data.error) {
+          console.warn(`[WAHA] Edge Function returned error for ${endpoint}:`, data.error);
+          return { error: true, message: data.error, ...data };
+        }
+        
+        console.log(`[WAHA] Edge Function success for ${endpoint}`);
+        return data;
+      } catch (err: any) {
+        console.error(`[WAHA] Edge fallback fatal error for ${endpoint}:`, err.message);
+        throw err;
       }
-      return data;
     };
 
     try {
       if (useDirectFetch) {
         try {
           const result = await performDirectFetch();
-          // If direct fetch returns an auth error (401/403), it might be because the proxy is stripping headers
-          if (result && result.error && (result.statusCode === 401 || result.statusCode === 403)) {
-            console.info(`[WAHA] Auth error (${result.statusCode}) via direct fetch, falling back to Edge Function...`);
-            return await performEdgeFallback();
+          // Network errors or Timeouts are handled inside performDirectFetch now
+          if (result && result.error) {
+            if (result.statusCode === 401 || result.statusCode === 403 || result.isNetworkError || result.isTimeout) {
+              console.info(`[WAHA] Direct fetch issue (${result.message}), trying Edge fallback...`);
+              return await performEdgeFallback();
+            }
           }
           return result;
         } catch (directError: any) {
-          console.info(`[WAHA] Direct fetch failed (network error), trying Edge fallback: ${directError.message}`);
+          console.info(`[WAHA] Direct fetch fatal error, trying Edge fallback: ${directError.message}`);
           return await performEdgeFallback();
         }
       } else {
