@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { QRCodeCanvas } from 'qrcode.react';
 import {
@@ -1602,12 +1603,12 @@ export default function App() {
 
 function Dashboard({ 
   currentUser,
-  onLogout, 
+  onLogout,
   onUpdateUser,
   onDeleteUser,
   addExecutive,
   users,
-  logoUrl, 
+  logoUrl,
   setLogoUrl,
   faviconUrl,
   setFaviconUrl,
@@ -1709,7 +1710,56 @@ function Dashboard({
   setLoginProgress: React.Dispatch<React.SetStateAction<number>>;
   loadIntegrations: () => Promise<void>;
 }) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [currentView, setCurrentView] = useState("Home");
+
+  // Map of Label -> Slug
+  const viewToSlug: Record<string, string> = useMemo(() => ({
+    "Home": "/",
+    "AI Assistant": "/ai-assistant",
+    "WhatsApp": "/whatsapp",
+    "Facebook / Messenger": "/facebook",
+    "Instagram": "/instagram",
+    "TikTok": "/tiktok",
+    "X": "/x",
+    "LinkedIn": "/linkedin",
+    "Connections": "/connections",
+    "Chats": "/chats",
+    "Social Management": "/social-management",
+    "Orders & Leads": "/orders-leads",
+    "Performance Intelligence": "/performance",
+    "Reports & Analytics": "/analytics",
+    "Employees": "/employees",
+    "Roles": "/roles",
+    "Permissions": "/permissions",
+    "Manual Migration": "/migration",
+    "Packages": "/packages",
+    "Profile": "/profile",
+    "Settings": "/settings"
+  }), []);
+
+  // Map of Slug -> Label
+  const slugToView = useMemo(() => 
+    Object.entries(viewToSlug).reduce((acc, [view, slug]) => ({ ...acc, [slug]: view }), {} as Record<string, string>)
+  , [viewToSlug]);
+
+  // Sync URL to State
+  useEffect(() => {
+    const view = slugToView[location.pathname];
+    if (view && view !== currentView) {
+      setCurrentView(view);
+    }
+  }, [location.pathname, slugToView, currentView]);
+
+  // Sync State to URL
+  useEffect(() => {
+    const slug = viewToSlug[currentView];
+    if (slug && slug !== location.pathname) {
+      navigate(slug);
+    }
+  }, [currentView, navigate, viewToSlug, location.pathname]);
+
   const [facebookAccessToken, setFacebookAccessToken] = useState<string>("");
   
   // Use currentUser as the source of truth for the profile
