@@ -27,5 +27,8 @@ export default defineConfig(({mode}) => {
         },
       },
     },
+    preview: {
+      allowedHosts: ['final-project-message.onrender.com'],
+    },
   };
 });
