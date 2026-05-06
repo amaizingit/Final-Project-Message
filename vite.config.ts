@@ -15,9 +15,6 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    ssr: {
-      noExternal: ['react-router-dom', 'lucide-react'],
-    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
@@ -26,9 +23,6 @@ export default defineConfig(({mode}) => {
         '/waha-proxy': {
           target: env.VITE_WAHA_URL || 'http://localhost:3000',
           changeOrigin: true,
-          secure: false,
-          timeout: 60000,
-          proxyTimeout: 60000,
           rewrite: (path: string) => path.replace(/^\/waha-proxy/, ''),
         },
       },

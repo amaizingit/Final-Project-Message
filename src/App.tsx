@@ -169,47 +169,6 @@ interface Lead {
   assignedTo: string;
 }
 
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
-import LandingPage from "./pages/LandingPage";
-
-/**
- * Safe storage helper that works on server
- */
-const safeStorage = {
-  getItem: (key: string) => {
-    if (typeof window === 'undefined') return null;
-    try {
-      return localStorage.getItem(key);
-    } catch (e) {
-      return null;
-    }
-  },
-  setItem: (key: string, value: string) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(key, value);
-    } catch (e) {
-      // Ignore
-    }
-  },
-  removeItem: (key: string) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.removeItem(key);
-    } catch (e) {
-      // Ignore
-    }
-  },
-  clear: () => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.clear();
-    } catch (e) {
-      // Ignore
-    }
-  }
-};
-
 const getApiKey = () => {
   try {
     // Try process.env (Vite define) or import.meta.env (standard Vite)
@@ -446,10 +405,10 @@ interface User {
  * 4. Real-time Telemetry: Sockets (Mocked via logic) for live agent tracking.
  * 5. Multi-Platform Orchestration: Posting engine with AI content optimization.
  */
-function MainApp() {
-  // Persistence Layer: Load and save user directory to safeStorage
+export default function App() {
+  // Persistence Layer: Load and save user directory to localStorage
   const [users, setUsers] = useState<User[]>(() => {
-    const saved = safeStorage.getItem("app_users");
+    const saved = localStorage.getItem("app_users");
     if (saved) return JSON.parse(saved);
     // Initial Admin Bootstrap
     const initialAdmin: User = {
@@ -467,7 +426,7 @@ function MainApp() {
 
   // Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = safeStorage.getItem("current_user");
+    const saved = localStorage.getItem("current_user");
     return saved ? JSON.parse(saved) : null;
   });
 
@@ -535,7 +494,7 @@ function MainApp() {
           setUsers(prev => {
             if (!prev.find(u => u.id === data.id)) {
               const updated = [...prev, data];
-              safeStorage.setItem("app_users", JSON.stringify(updated));
+              localStorage.setItem("app_users", JSON.stringify(updated));
               return updated;
             }
             return prev;
@@ -556,7 +515,7 @@ function MainApp() {
         return;
       }
       setCurrentUser(user);
-      safeStorage.setItem("current_user", JSON.stringify(user));
+      localStorage.setItem("current_user", JSON.stringify(user));
     } else {
       console.error("Login failed: User not found or password incorrect.");
       setLoginError("Invalid email or password. Please try again.");
@@ -574,28 +533,25 @@ function MainApp() {
     }
   };
 
-  const navigate = useNavigate();
-
   const handleLogout = () => {
     setCurrentUser(null);
-    safeStorage.removeItem("current_user");
-    navigate("/");
+    localStorage.removeItem("current_user");
   };
 
   const updateCurrentUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
-    safeStorage.setItem("current_user", JSON.stringify(updatedUser));
+    localStorage.setItem("current_user", JSON.stringify(updatedUser));
     
     // Also update in the main users list
     const updatedUsers = users.map(u => u.id === updatedUser.id ? updatedUser : u);
     setUsers(updatedUsers);
-    safeStorage.setItem("app_users", JSON.stringify(updatedUsers));
+    localStorage.setItem("app_users", JSON.stringify(updatedUsers));
   };
 
   const deleteUser = async (userId: string) => {
     const updatedUsers = users.filter(u => u.id !== userId);
     setUsers(updatedUsers);
-    safeStorage.setItem("app_users", JSON.stringify(updatedUsers));
+    localStorage.setItem("app_users", JSON.stringify(updatedUsers));
 
     if (isSupabaseConfigured) {
       try {
@@ -637,11 +593,11 @@ function MainApp() {
     }
   };
 
-  const [logoUrl, setLogoUrl] = useState<string | null>(() => safeStorage.getItem("app_logo"));
-  const [faviconUrl, setFaviconUrl] = useState<string | null>(() => safeStorage.getItem("app_favicon"));
-  const [appName, setAppName] = useState<string>(() => safeStorage.getItem("app_name") || "Amaizing IT");
+  const [logoUrl, setLogoUrl] = useState<string | null>(() => localStorage.getItem("app_logo"));
+  const [faviconUrl, setFaviconUrl] = useState<string | null>(() => localStorage.getItem("app_favicon"));
+  const [appName, setAppName] = useState<string>(() => localStorage.getItem("app_name") || "Amaizing IT");
   const [appColors, setAppColors] = useState(() => {
-    const saved = safeStorage.getItem("app_colors");
+    const saved = localStorage.getItem("app_colors");
     return saved ? JSON.parse(saved) : {
       sidebarTop: "#14060a",
       sidebarMiddle: "#a00c1c",
@@ -831,65 +787,137 @@ function MainApp() {
     const cleanWahaUrl = wahaConfig.url?.replace(/\/$/, '') || "";
     const matchesProxy = cleanWahaUrl === proxyUrl || cleanWahaUrl === "";
     
-    // Internal Proxy is the most reliable way to handle dynamic URLs and avoid CORS/Mixed Content.
-    // We favor it over direct fetch which depends on static Vite proxy configuration.
-    const useInternalProxy = true;
+    // Direct fetch only works if the URL matches our vercel.json rewrite destination
+    // OR if it's a local URL (where Vite proxy handles it)
+    const useDirectFetch = matchesProxy || isLocalUrl(cleanWahaUrl);
 
-    const performDirectFetch = async (retries = 2) => {
-      // Direct fetch implementation remains as a fallback or for local development if needed,
-      // but for now we'll prefer the internal proxy route.
-      // ... same implementation ...
-      let lastError: any = null;
+    const performDirectFetch = async () => {
+      // Use Vite dev proxy to avoid CORS - requests go through localhost
+      const session = sessionName || wahaConfig.session || 'default';
+      // sessions/* endpoints already include the session in the path, don't add prefix
+      // sendText, sendImage, etc. are GLOBAL endpoints that take session in the body
+      const isSessionEndpoint = endpoint.startsWith('sessions');
+      const isGlobalEndpoint = ['sendText', 'sendImage', 'sendFile', 'sendVideo', 'sendVoice', 'sendSeen', 'sendPresence', 'messages', 'sessions'].includes(endpoint.split('?')[0]) || endpoint.startsWith('contacts');
+      const apiPath = (isSessionEndpoint || isGlobalEndpoint)
+        ? `/waha-proxy/api/${endpoint}` 
+        : `/waha-proxy/api/${session}/${endpoint}`;
+      const url = new URL(`${window.location.origin}${apiPath}`);
       
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        // ... (rest of the implementation stays similar but we'll call it only if needed)
+      const queryParams = { ...params };
+      if (isGlobalEndpoint && !queryParams.session) queryParams.session = session;
+      Object.keys(queryParams).forEach(key => url.searchParams.append(key, queryParams[key]));
+      
+      const headers: any = { 'Content-Type': 'application/json' };
+      const currentApiKey = wahaConfig.apiKey;
+      if (currentApiKey) {
+        const trimmedKey = currentApiKey.trim();
+        headers['X-Api-Key'] = trimmedKey;
+        // Also provide Authorization header as many proxies/servers prefer it
+        headers['Authorization'] = `Bearer ${trimmedKey}`;
       }
-      return { error: true, message: "Direct fetch skipped", isNetworkError: true };
-    };
-
-    const performInternalProxy = async () => {
-      console.log(`[WAHA] [v2-InternalProxy] Calling: ${endpoint} | Method: ${method}`);
       
+      if (method !== 'GET') {
+        console.log(`[WAHA] Calling ${method} ${apiPath} | Session: ${session} | API Key set: ${!!currentApiKey}`);
+      }
+
+      // WAHA chat history can be slow, especially when NOWEB store is warming up.
+      const timeoutMs = endpoint === 'chats' ? 45000 : 12000;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
-        const response = await fetch('/api/waha-proxy', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            waha_url: wahaConfig.url,
-            session_name: wahaConfig.session,
-            waha_api_key: wahaConfig.apiKey,
-            endpoint,
-            method,
-            params: method === 'POST' ? body : params
-          })
+        const response = await fetch(url.toString(), {
+          method,
+          headers,
+          body: method === 'POST' && body ? JSON.stringify(body) : null,
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
+
+        const responseText = await response.text();
+        let responseData = null;
         
-        const data = await response.json();
-        
-        if (!response.ok) {
-          console.warn(`[WAHA] [v2-InternalProxy] Error for ${endpoint}:`, data.error || response.statusText);
-          return { error: true, message: data.error || response.statusText, ...data };
+        if (responseText && responseText.trim()) {
+          try {
+            responseData = JSON.parse(responseText);
+          } catch (e) {
+            // Success response but not JSON
+            if (response.ok) {
+              console.info(`[WAHA] Non-JSON success from ${endpoint}:`, responseText.substring(0, 100));
+              return { success: true, text: responseText };
+            }
+            // Error response and not JSON
+            const errorMsg = responseText || response.statusText || "WAHA request failed";
+            console.warn(`[WAHA] API Error (Non-JSON) on ${endpoint}:`, { status: response.status, message: errorMsg });
+            return { error: true, statusCode: response.status, message: errorMsg };
+          }
+        } else if (response.ok) {
+          // Empty success response (common for some POST/DELETE actions)
+          return { success: true, message: "Empty success response" };
         }
-        
-        console.log(`[WAHA] [v2-InternalProxy] Success for ${endpoint}`);
-        return data;
+
+        if (!response.ok) {
+          const errorMsg = responseData?.message || responseText || response.statusText || "WAHA request failed";
+          console.warn(`[WAHA] API Error on ${endpoint}:`, { status: response.status, message: errorMsg });
+          return { ...responseData, error: true, statusCode: response.status, message: errorMsg };
+        }
+        return responseData;
       } catch (err: any) {
-        console.error(`[WAHA] [v2-InternalProxy] Fatal error for ${endpoint}:`, err.message);
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          throw new Error(`WAHA Request Timeout (${endpoint}) after ${Math.round(timeoutMs / 1000)}s`);
+        }
         throw err;
       }
     };
 
-    try {
-      if (useInternalProxy) {
-        return await performInternalProxy();
+    const performEdgeFallback = async () => {
+      if (!isSupabaseConfigured) {
+        throw new Error("Supabase not configured for proxy fallback");
       }
-      // Legacy path logic ...
-      return await performInternalProxy();
+      
+      const { data, error: invokeError } = await supabase.functions.invoke('waha-proxy', {
+        body: {
+          waha_url: wahaConfig.url,
+          session_name: wahaConfig.session,
+          waha_api_key: wahaConfig.apiKey,
+          endpoint,
+          method,
+          params: method === 'POST' ? body : params
+        }
+      });
+      
+      if (invokeError) throw invokeError;
+      
+      // Normalize Edge Function error format
+      if (data && data.error && typeof data.error === 'string') {
+        return { error: true, message: data.error, ...data };
+      }
+      return data;
+    };
+
+    try {
+      if (useDirectFetch) {
+        try {
+          const result = await performDirectFetch();
+          // If direct fetch returns an auth error (401/403), it might be because the proxy is stripping headers
+          if (result && result.error && (result.statusCode === 401 || result.statusCode === 403)) {
+            console.info(`[WAHA] Auth error (${result.statusCode}) via direct fetch, falling back to Edge Function...`);
+            return await performEdgeFallback();
+          }
+          return result;
+        } catch (directError: any) {
+          console.info(`[WAHA] Direct fetch failed (network error), trying Edge fallback: ${directError.message}`);
+          return await performEdgeFallback();
+        }
+      } else {
+        // For custom URLs, we MUST use the Edge Function to avoid CORS and Vercel proxy limitations
+        console.log(`[WAHA] Using Edge Function for custom URL: ${wahaConfig.url}`);
+        return await performEdgeFallback();
+      }
     } catch (err: any) {
       const message = err instanceof Error ? err.message : "WAHA request failed";
-      console.warn(`[WAHA] [v2-InternalProxy] API call failed (${endpoint}):`, message);
+      console.warn(`[WAHA] API call failed (${endpoint}):`, message);
       return { error: true, message };
     }
   };
@@ -1038,16 +1066,6 @@ function MainApp() {
 
       setSyncProgress(90);
       
-      // Deduplicate by a combined key to prevent duplicate keys in UI
-      const uniqueChatsMap = new Map<string, Chat>();
-      allChats.forEach(chat => {
-        const dedupeKey = `${chat.platform}-${chat.session || 'default'}-${chat.id}`;
-        if (!uniqueChatsMap.has(dedupeKey)) {
-          uniqueChatsMap.set(dedupeKey, chat);
-        }
-      });
-      allChats = Array.from(uniqueChatsMap.values());
-
       // Sort by timestamp (most recent first)
       allChats.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
@@ -1706,7 +1724,7 @@ function Dashboard({
   }), [currentUser]);
 
   const [permissions, setPermissions] = useState(() => {
-    const saved = safeStorage.getItem("app_permissions");
+    const saved = localStorage.getItem("app_permissions");
     return saved ? JSON.parse(saved) : [
       { name: "Connections", isSystem: true, description: "Manage WhatsApp and Messenger channel accounts (credentials, labels, active state).", slug: "connections.manage", roles: 1 },
       { name: "Employees", isSystem: true, description: "Assign roles to team members.", slug: "employees.manage", roles: 1 },
@@ -1727,7 +1745,7 @@ function Dashboard({
   }, [permissions]);
 
   const [roles, setRoles] = useState(() => {
-    const saved = safeStorage.getItem("app_roles");
+    const saved = localStorage.getItem("app_roles");
     return saved ? JSON.parse(saved) : [
       { 
         name: "Administrator", 
@@ -1935,8 +1953,8 @@ function Dashboard({
   }
 
   const sidebarItems: SidebarItemData[] = useMemo(() => {
-    const isExec = currentUser?.role === "Executive";
-    const items: SidebarItemData[] = [
+    const isExec = currentUser.role === "Executive";
+    return [
       { icon: <Home className="w-5 h-5" />, label: "Home", section: 'MENU' },
       { icon: <Zap className="w-5 h-5 text-amber-400" />, label: "AI Assistant", section: 'MENU' },
       { icon: <Phone className="w-5 h-5" />, label: "WhatsApp", section: 'MENU', restricted: true },
@@ -1960,16 +1978,14 @@ function Dashboard({
       { icon: <CreditCard className="w-5 h-5" />, label: "Packages", section: 'SYSTEM', restricted: true },
       { icon: <User className="w-5 h-5" />, label: "Profile", section: 'SYSTEM' },
       { icon: <Settings className="w-5 h-5" />, label: "Settings", section: 'SYSTEM', restricted: true },
-    ];
-
-    return items.filter(item => {
+    ].filter(item => {
       if (!isExec) return true;
       // All menu items that aren't specifically "Restricted" are visible
       if (!item.restricted) return true;
       // If it is restricted, check if the executive has specific permission for it
-      return currentUser?.permissions?.includes(item.label);
+      return currentUser.permissions?.includes(item.label);
     });
-  }, [currentUser?.role, currentUser?.permissions]);
+  }, [currentUser.role, currentUser.permissions]);
 
   const stats = useMemo(() => {
     if (currentUser.role === "Executive") {
@@ -2025,9 +2041,9 @@ function Dashboard({
         <div className="flex-1 px-3 space-y-6 pt-4 overflow-y-auto no-scrollbar overflow-x-hidden">
           <div>
             {isExpanded && <p className="px-3 text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2 font-mono">Menu</p>}
-            {sidebarItems.filter(i => i.section === 'MENU').map((item) => (
+            {sidebarItems.filter(i => i.section === 'MENU').map((item, i) => (
               <SidebarItem 
-                key={item.label} 
+                key={i} 
                 icon={item.icon} 
                 label={item.label} 
                 active={currentView === item.label} 
@@ -2039,9 +2055,9 @@ function Dashboard({
 
           <div>
             {isExpanded && <p className="px-3 text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2 font-mono">Operations</p>}
-            {sidebarItems.filter(i => i.section === 'WORK').map((item) => (
+            {sidebarItems.filter(i => i.section === 'WORK').map((item, i) => (
               <SidebarItem 
-                key={item.label} 
+                key={i} 
                 icon={item.icon} 
                 label={item.label} 
                 active={currentView === item.label} 
@@ -2053,9 +2069,9 @@ function Dashboard({
 
           <div>
             {isExpanded && <p className="px-3 text-[10px] font-bold text-white/30 uppercase tracking-widest mb-2 font-mono">Account</p>}
-            {sidebarItems.filter(i => i.section === 'SYSTEM').map((item) => (
+            {sidebarItems.filter(i => i.section === 'SYSTEM').map((item, i) => (
               <SidebarItem 
-                key={item.label} 
+                key={i} 
                 icon={item.icon} 
                 label={item.label} 
                 active={currentView === item.label} 
@@ -3388,7 +3404,7 @@ function AIInsightCard({ icon, title, desc, color }: { icon: React.ReactNode, ti
   return (
     <div className="bg-[#1e293b] p-8 rounded-[2rem] border border-slate-800 shadow-xl hover:border-slate-700 transition-all group">
       <div className={`w-12 h-12 ${color} bg-white/5 rounded-xl flex items-center justify-center mb-6 shadow-lg group-hover:scale-110 transition-transform`}>
-        {React.cloneElement(icon as React.ReactElement<{className?: string}>, { className: "w-6 h-6" })}
+        {React.cloneElement(icon as React.ReactElement, { className: "w-6 h-6" })}
       </div>
       <h5 className="font-bold text-white mb-2">{title}</h5>
       <p className="text-xs text-slate-400 leading-relaxed font-medium">{desc}</p>
@@ -3596,35 +3612,25 @@ function WhatsAppView({
         if (data && data.status === "SCAN_QR_CODE") {
           console.log("[WAHA] Session in SCAN_QR_CODE, fetching QR image...");
           try {
-            // Fetch QR via the internal proxy which handles requests correctly
-            try {
-              const response = await fetch('/api/waha-proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  waha_url: wahaConfig.url,
-                  waha_api_key: wahaConfig.apiKey,
-                  session_name: wahaConfig.session,
-                  endpoint: 'sessions/status',
-                  method: 'GET'
-                })
-              });
-              
-              const qrData = await response.json();
-              
-              if (response.ok && qrData) {
-                if (qrData.qrImage || qrData.qr || qrData.value) {
-                  // Merge all properties (qr, qrImage, status, etc)
-                  data = { ...data, ...qrData };
-                  console.log("[WAHA] Got QR data via Internal Proxy");
-                } else if (qrData.status) {
-                  data = { ...data, status: qrData.status };
-                }
-              } else {
-                console.warn(`[WAHA] Internal Proxy returned error for QR:`, qrData.error || response.statusText);
+            // Fetch QR via the dedicated get-waha-qr Edge Function which handles images correctly
+            const { data: qrData, error: qrInvokeError } = await supabase.functions.invoke('get-waha-qr', {
+              body: {
+                waha_url: wahaConfig.url,
+                waha_api_key: wahaConfig.apiKey,
+                session_name: wahaConfig.session
               }
-            } catch (qrErr: any) {
-              console.error("[WAHA] Failed to fetch QR image via Proxy:", qrErr);
+            });
+            
+            if (!qrInvokeError && qrData) {
+              if (qrData.qrImage || qrData.qr || qrData.value) {
+                // Merge all properties (qr, qrImage, status, etc)
+                data = { ...data, ...qrData };
+                console.log("[WAHA] Got QR data via get-waha-qr Edge Function");
+              } else if (qrData.status) {
+                data = { ...data, status: qrData.status };
+              }
+            } else if (qrInvokeError) {
+              console.warn(`[WAHA] get-waha-qr returned error:`, qrInvokeError);
             }
           } catch (qrErr: any) {
             console.error("[WAHA] Failed to fetch QR image:", qrErr);
@@ -7056,7 +7062,7 @@ function ChatsView({
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Viewing: <span className="text-blue-400">{activeFilter}</span></span>
             <button 
-              onClick={() => handleLiveSync(true)}
+              onClick={handleLiveSync}
               disabled={isAIGenerating}
               className="p-1.5 bg-[#1e293b]/30 border border-slate-800/50 rounded-md text-slate-400 hover:text-white transition-all shrink-0 flex items-center gap-1 group"
               title="Refresh Live from WhatsApp"
@@ -7090,7 +7096,7 @@ function ChatsView({
           ) : (
             filteredChats.map((chat) => (
               <div 
-                key={`${chat.platform}-${chat.session || 'default'}-${chat.id}`}
+                key={chat.id}
                 onClick={() => {
                   setSelectedChat(chat.id);
                   if (chat.unread > 0) {
@@ -7197,7 +7203,7 @@ function ChatsView({
                           id: typeof wm.id === 'object' ? (wm.id?._serialized || JSON.stringify(wm.id)) : wm.id,
                           text: wm.body || wm.content || wm.text || "(No content)",
                           type: (wm.type === 'image' || wm.hasMedia) ? 'image' : 'text',
-                          sender: (wm.fromMe ? "me" : "them") as "me" | "them",
+                          sender: wm.fromMe ? "me" : "them",
                           time: wm.timestamp ? new Date(wm.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Now"
                         }));
                         setChats(prev => prev.map(c => String(c.id) === String(selectedChat) ? { ...c, messages: formatted } : c));
@@ -7582,7 +7588,7 @@ function ChatsView({
               </div>
             )}
             {currentChat.messages.map((msg: any, i) => (
-              <div key={msg.id && typeof msg.id === 'string' ? msg.id : `msg-${msg.id || i}-${i}`} className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
+              <div key={i} className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[70%] space-y-1 group relative`}>
                   <div className={`px-5 py-3 rounded-3xl text-sm leading-relaxed shadow-lg ${
                     msg.sender === 'me' 
@@ -8094,7 +8100,7 @@ function ChatsView({
                         onClick={() => {
                           const title = prompt("Enter a title for this saved reply:", "Quick Reply");
                           if (title) {
-                            setSavedReplies(prev => [...prev, { id: Date.now(), title, content: messageText, imageUrl: null }]);
+                            setSavedReplies(prev => [...prev, { id: Date.now(), title, content: messageText }]);
                             alert("Message saved to templates!");
                           }
                         }}
@@ -8172,7 +8178,7 @@ function ChatsView({
               <div>
                 <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
                   {currentChat.name}
-                  <CheckCircle2 className="w-4 h-4 text-blue-500 fill-blue-500/10" />
+                  <CheckCircle2 className="w-4 h-4 text-blue-500 fill-blue-500/10" title="Verified Account" />
                 </h3>
                 <p className="text-slate-500 text-[11px] font-black uppercase tracking-widest mt-0.5">
                   Synced via {currentChat.platform}
@@ -11393,16 +11399,5 @@ function AnalyticsView({ employees, chats, orders, leads, currentUser }: { emplo
         </div>
       </div>
     </motion.div>
-  );
-}
-
-export default function App() {
-  return (
-    <Routes>
-      <Route path="/" element={<LandingPage />} />
-      <Route path="/dashboard" element={<MainApp />} />
-      <Route path="/login" element={<MainApp />} />
-      <Route path="*" element={<LandingPage />} />
-    </Routes>
   );
 }
